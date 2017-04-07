@@ -1,5 +1,7 @@
 pragma solidity ^0.4.0;
 
+// Problems with this implementation to think about
+
 contract StandardToken{
     
     function StandardToken() {
@@ -45,8 +47,17 @@ contract StandardToken{
       balances[_to] += _amount;
   }
   
-  mapping(address => uint256) balances;
+  function addEther(address _to, uint _amount) {
+      etherBalance[_to] += _amount;
+  }
+  
+  function getEther(address _address) returns (uint) {
+      return etherBalance[_address];
+  }
+  
+  mapping(address => uint256) public balances;
   mapping (address => mapping (address => uint256)) allowed;
+  mapping(address => uint256) public etherBalance;
   uint256 public totalSupply;
 }
 
@@ -57,12 +68,13 @@ contract DAO {
     uint tokenSellLength;
     uint currentTime;
     uint totalEth;
+    uint proposalID;
     uint latestProposal;
+    uint cumulativeROI;
     
     StandardToken DAOToken;
-    
-    mapping (address => uint) numDAOTokens;
     mapping (uint => Proposal) proposals;
+    mapping (address => uint) etherBalance;
 
     modifier onlyBy(address _account) {
         if (msg.sender != _account) 
@@ -82,7 +94,6 @@ contract DAO {
         _;
     }
     
-    
     struct Proposal {
         
         uint hash;
@@ -91,10 +102,13 @@ contract DAO {
         string description;
         uint ROI;
         uint numVotes;
+        uint votesFor;
         uint startTime;
         uint votingPeriod;
-        mapping(address => uint) votes;
+        uint endTime;
+        mapping (address => bool) voted;
     }
+    
     
     function DAO(uint _tokenCost, uint _tokenSellLength, address _token) {
         
@@ -104,12 +118,14 @@ contract DAO {
         currentTime = now;
         totalDaoTokens = 0;
         proposalID = 0;
+        cumulativeROI = 100;
     }
     
     function invest() onlyBefore(tokenSellLength, currentTime) payable returns (bool) {
         if (msg.value < tokenCost || tokenCost == 0) throw;
         uint numTokens = msg.value/tokenCost;
         DAOToken.mint(msg.sender, numTokens);
+        DAOToken.addEther(msg.sender, msg.value);
         uint change = msg.value - numTokens*tokenCost;
         if(!msg.sender.send(change)) throw;
         return true;
@@ -122,21 +138,73 @@ contract DAO {
     uint _votingPeriod) 
     returns (uint proposalID) {
         
-        uint hash = uint(sha3(_recipient, _amount, _description, _amountROI, _votingPeriod, proposalID));
+        uint hash = proposalID;
         proposalID += 1;
-        proposals[hash] = Proposal(hash, _recipient, _amount, _description, _amountROI, 0, now, _votingPeriod);
-        latestProposal = hash;
+        proposals[hash] = Proposal(hash, _recipient, _amount, _description, _amountROI, 0, 0, now, _votingPeriod, now+_votingPeriod);
+        if(proposals[latestProposal].endTime < proposals[hash].endTime) {
+            latestProposal = hash;
+        }
         return hash;
     }
     
-    function vote(uint _proposalID, 
+    function  vote(uint _proposalID, 
     bool _supportProposal) 
-    onlyBefore(proposals[_proposalID].votingPeriod, proposals[_proposalID].startTime) 
+    onlyBefore(proposals[_proposalID].votingPeriod, proposals[_proposalID].startTime) public
     {
+        if(proposals[_proposalID].voted[msg.sender]) throw;
+        proposals[_proposalID].voted[msg.sender] == true;
+        proposals[_proposalID].numVotes += DAOToken.balanceOf(msg.sender);
+        if (_supportProposal) {
+            proposals[_proposalID].votesFor += DAOToken.balanceOf(msg.sender);
+        }
+    }
+    
+    function transfer(address _to, uint _value) returns (bool)
+    {
+        if(proposals[latestProposal].voted[msg.sender]) throw;
+        if(proposals[latestProposal].voted[_to]) throw;
+        return DAOToken.transfer(_to, _value);
+    }
+    
+    function approve(address _spender, uint _value) returns (bool) {
+        
+        if(proposals[latestProposal].voted[msg.sender]) throw;
+        if(proposals[latestProposal].voted[_spender]) throw;
+        return DAOToken.approve(_spender, _value);
         
     }
     
-    function transfer(address _to, uint _value) onlyAfter(proposals[latestProposal].votingPeriod, proposals[latestProposal].startTime)
+    function transferFrom(address _from, address _to, uint _value) returns (bool) {
+        
+        if(proposals[latestProposal].voted[_from]) throw;
+        if(proposals[latestProposal].voted[_to]) throw;
+        
+        return DAOToken.transferFrom(_from, _to, _value);
+    }
+    
+    function executeProposal(uint _proposalID) payable onlyAfter(proposals[_proposalID].votingPeriod, proposals[_proposalID].startTime)
+    returns (bool success) {
+        
+        if (proposals[_proposalID].numVotes > proposals[_proposalID].votesFor*2) {
+            return true;
+        }
+        else {
+            if(!proposals[_proposalID].recipient.send(proposals[_proposalID].amount)) throw;
+            delete proposals[_proposalID];
+            return true;
+        }
+    }
+    
+    function payBackInvestment(uint _proposalID) payable returns (bool success) {
+        if (msg.value < proposals[_proposalID].amount*proposals[_proposalID].ROI/100) throw;
+        cumulativeROI += proposals[_proposalID].ROI;
+        return true;
+    }
+    
+    function withdrawEther() returns (bool) {
+        
+        if(proposals[latestProposal].voted[msg.sender] == true) throw;
+        if(!msg.sender.send(DAOToken.getEther(msg.sender) * cumulativeROI / 100)) throw;
         
     }
     
