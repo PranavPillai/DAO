@@ -55,6 +55,12 @@ contract StandardToken{
   mapping (address => mapping (address => uint256)) allowed;
   
   uint256 private totalSupply;
+  
+  function trash() {
+      uint numToTrash = balanceOf(msg.sender);
+      balances[msg.sender] = 0;
+      totalSupply -= numToTrash;
+  }
  
 }
 
@@ -166,9 +172,7 @@ contract DAO {
     }
     
     function approve(address _spender, uint _value) returns (bool) {
-        
         return DAOToken.approve(_spender, _value);
-        
     }
     
     function transferFrom(address _from, address _to, uint _value) returns (bool) {
@@ -190,13 +194,16 @@ contract DAO {
     }
     
     function payBackInvestment(uint _proposalID) payable returns (bool success) {
-        if (msg.value < proposals[_proposalID].amount) throw;
+        if (msg.value < proposals[_proposalID].amount + proposals[_proposalID].ROI) throw;
         return true;
     }
     
     function withdrawEther() onlyAfterTime(latestProposal[msg.sender]) returns (bool) {
+        DAOToken.trash();
         uint etherOwed = this.balance * DAOToken.balanceOf(msg.sender) / DAOToken.getTotalSupply();
         msg.sender.transfer(etherOwed);
+        return true;
     }
     
 }
+
