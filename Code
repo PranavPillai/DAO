@@ -1,7 +1,6 @@
 pragma solidity ^0.4.0;
 
-// Problems with this implementation to think about
-
+// a Standard Token to be used in the DAO
 contract StandardToken{
     
     function StandardToken() {
@@ -42,58 +41,59 @@ contract StandardToken{
     return allowed[_owner][_spender];
   }
   
+  function getTotalSupply () constant returns (uint256 supply) {
+      return totalSupply;
+  }
+  
   function mint(address _to,uint _amount) {
       totalSupply += _amount;
       balances[_to] += _amount;
   }
   
-  function addEther(address _to, uint _amount) {
-      etherBalance[_to] += _amount;
-  }
-  
-  function getEther(address _address) returns (uint) {
-      return etherBalance[_address];
-  }
-  
   mapping(address => uint256) public balances;
+  
   mapping (address => mapping (address => uint256)) allowed;
-  mapping(address => uint256) public etherBalance;
-  uint256 public totalSupply;
+  
+  uint256 private totalSupply;
+ 
 }
 
+// The DAO itself
 contract DAO {
     
-    uint totalDaoTokens;
     uint tokenCost;
     uint tokenSellLength;
-    uint currentTime;
-    uint totalEth;
+    uint initTime;
     uint proposalID;
-    uint latestProposal;
-    uint cumulativeROI;
-    
-    StandardToken DAOToken;
-    mapping (uint => Proposal) proposals;
-    mapping (address => uint) etherBalance;
 
-    modifier onlyBy(address _account) {
-        if (msg.sender != _account) 
-            throw;
-        _;
-    }
+    //the instance of Standard Token that will be used in this DAO. Contains mapping from users to # of tokens
+    StandardToken DAOToken;
     
-    modifier onlyBefore(uint duration, uint startTime) {
+    // maps proposal IDs to proposals
+    mapping (uint => Proposal) proposals;
+
+    mapping (address => uint) latestProposal;
+
+    // only allows function to be called before a certain time period has passed
+    modifier onlyBefore(uint startTime, uint duration) {
         if (now > startTime + duration)
             throw;
         _;
     }
-    
-    modifier onlyAfter(uint duration, uint startTime) {
-        if (now < startTime + duration)
+    // only allows function to be called after a certain time period has passed
+    modifier onlyAfter(uint _proposalID) {
+        if (now < proposals[_proposalID].startTime + proposals[_proposalID].votingPeriod)
             throw;
         _;
     }
     
+    modifier onlyAfterTime(uint endTime) {
+        if (now < endTime)
+            throw;
+        _;
+    }
+    
+    // struct containing relevant information for each proposal
     struct Proposal {
         
         uint hash;
@@ -105,45 +105,42 @@ contract DAO {
         uint votesFor;
         uint startTime;
         uint votingPeriod;
-        uint endTime;
+        
+        // maps users to the number of standing proposals they've voted on
         mapping (address => bool) voted;
     }
     
-    
+    // initialize DAO
     function DAO(uint _tokenCost, uint _tokenSellLength, address _token) {
         
         tokenCost = _tokenCost;
         tokenSellLength = _tokenSellLength;
         DAOToken = new StandardToken();
-        currentTime = now;
-        totalDaoTokens = 0;
+        initTime = now;
         proposalID = 0;
-        cumulativeROI = 100;
     }
     
-    function invest() onlyBefore(tokenSellLength, currentTime) payable returns (bool) {
-        if (msg.value < tokenCost || tokenCost == 0) throw;
+    // let users buy DAOTokens before the selling period ends
+    function invest() public onlyBefore(initTime, tokenSellLength) payable returns (bool) {
+        if (msg.value < tokenCost) throw;
         uint numTokens = msg.value/tokenCost;
         DAOToken.mint(msg.sender, numTokens);
-        DAOToken.addEther(msg.sender, msg.value);
         uint change = msg.value - numTokens*tokenCost;
-        if(!msg.sender.send(change)) throw;
+        msg.sender.transfer(change);
         return true;
     }
     
+    // let any user submit an investment proposal
     function newProposal (address _recipient, 
     uint _amount, 
     string _description, 
     uint _amountROI, 
-    uint _votingPeriod) 
+    uint _votingPeriod) public 
     returns (uint proposalID) {
-        
+        if (DAOToken.balanceOf(msg.sender) == 0) throw;
         uint hash = proposalID;
         proposalID += 1;
-        proposals[hash] = Proposal(hash, _recipient, _amount, _description, _amountROI, 0, 0, now, _votingPeriod, now+_votingPeriod);
-        if(proposals[latestProposal].endTime < proposals[hash].endTime) {
-            latestProposal = hash;
-        }
+        proposals[hash] = Proposal(hash, _recipient, _amount, _description, _amountROI, 0, 0, now, _votingPeriod);
         return hash;
     }
     
@@ -157,32 +154,29 @@ contract DAO {
         if (_supportProposal) {
             proposals[_proposalID].votesFor += DAOToken.balanceOf(msg.sender);
         }
+        uint endTime = proposals[_proposalID].votingPeriod + proposals[_proposalID].startTime;
+        if (latestProposal[msg.sender] < endTime) {
+            latestProposal[msg.sender] = endTime;
+        }
     }
     
-    function transfer(address _to, uint _value) returns (bool)
+    function transfer(address _to, uint _value) onlyAfterTime(latestProposal[msg.sender]) returns (bool)
     {
-        if(proposals[latestProposal].voted[msg.sender]) throw;
-        if(proposals[latestProposal].voted[_to]) throw;
         return DAOToken.transfer(_to, _value);
     }
     
     function approve(address _spender, uint _value) returns (bool) {
         
-        if(proposals[latestProposal].voted[msg.sender]) throw;
-        if(proposals[latestProposal].voted[_spender]) throw;
         return DAOToken.approve(_spender, _value);
         
     }
     
     function transferFrom(address _from, address _to, uint _value) returns (bool) {
         
-        if(proposals[latestProposal].voted[_from]) throw;
-        if(proposals[latestProposal].voted[_to]) throw;
-        
         return DAOToken.transferFrom(_from, _to, _value);
     }
     
-    function executeProposal(uint _proposalID) payable onlyAfter(proposals[_proposalID].votingPeriod, proposals[_proposalID].startTime)
+    function executeProposal(uint _proposalID) payable onlyAfter(_proposalID)
     returns (bool success) {
         
         if (proposals[_proposalID].numVotes > proposals[_proposalID].votesFor*2) {
@@ -196,16 +190,13 @@ contract DAO {
     }
     
     function payBackInvestment(uint _proposalID) payable returns (bool success) {
-        if (msg.value < proposals[_proposalID].amount*proposals[_proposalID].ROI/100) throw;
-        cumulativeROI += proposals[_proposalID].ROI;
+        if (msg.value < proposals[_proposalID].amount) throw;
         return true;
     }
     
-    function withdrawEther() returns (bool) {
-        
-        if(proposals[latestProposal].voted[msg.sender] == true) throw;
-        if(!msg.sender.send(DAOToken.getEther(msg.sender) * cumulativeROI / 100)) throw;
-        
+    function withdrawEther() onlyAfterTime(latestProposal[msg.sender]) returns (bool) {
+        uint etherOwed = this.balance * DAOToken.balanceOf(msg.sender) / DAOToken.getTotalSupply();
+        msg.sender.transfer(etherOwed);
     }
     
 }
